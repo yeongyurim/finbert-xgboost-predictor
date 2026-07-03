@@ -1,0 +1,12 @@
+# Mac 시스템 파일
+.DS_Store
+
+# 파이썬 캐시 및 가상환경
+__pycache__/
+*.pyc
+venv/
+env/
+
+# 모델 가중치 파일 및 학습 데이터 (중요)
+models/*.pkl
+*.csv

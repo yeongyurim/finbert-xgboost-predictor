@@ -1,0 +1,108 @@
+{
+  "ticker": "005930.KS",
+  "trained_at": "2026-07-03T11:21:12.252116",
+  "feature_columns": [
+    "Open",
+    "High",
+    "Low",
+    "Close",
+    "Volume",
+    "Change",
+    "MA5",
+    "MA20",
+    "RSI",
+    "MACD",
+    "MACD_Signal",
+    "MACD_Hist",
+    "BB_Upper",
+    "BB_Lower",
+    "BB_Width",
+    "Volume_Change",
+    "Volume_MA5",
+    "Price_Range",
+    "Price_Range_Pct",
+    "sentiment_score",
+    "positive",
+    "negative",
+    "neutral"
+  ],
+  "n_features": 23,
+  "regression_params": {
+    "n_estimators": "200",
+    "max_depth": "6",
+    "learning_rate": "0.05",
+    "subsample": "0.8",
+    "colsample_bytree": "0.8",
+    "reg_alpha": "0.1",
+    "reg_lambda": "1.0",
+    "random_state": "42",
+    "objective": "reg:squarederror",
+    "n_jobs": "-1"
+  },
+  "classification_params": {
+    "n_estimators": "200",
+    "max_depth": "6",
+    "learning_rate": "0.05",
+    "subsample": "0.8",
+    "colsample_bytree": "0.8",
+    "reg_alpha": "0.1",
+    "reg_lambda": "1.0",
+    "random_state": "42",
+    "objective": "binary:logistic",
+    "eval_metric": "logloss",
+    "n_jobs": "-1"
+  },
+  "regression_metrics": {
+    "mae": 35085.3,
+    "rmse": 40978.86,
+    "mape": 10.25
+  },
+  "classification_metrics": {
+    "accuracy": 0.52,
+    "precision": 0.5333,
+    "recall": 0.6154,
+    "f1": 0.5714
+  },
+  "feature_importance": [
+    {
+      "feature": "MA20",
+      "importance": 0.3328
+    },
+    {
+      "feature": "High",
+      "importance": 0.2577
+    },
+    {
+      "feature": "Open",
+      "importance": 0.1809
+    },
+    {
+      "feature": "Close",
+      "importance": 0.0649
+    },
+    {
+      "feature": "MA5",
+      "importance": 0.0457
+    },
+    {
+      "feature": "Low",
+      "importance": 0.0389
+    },
+    {
+      "feature": "BB_Upper",
+      "importance": 0.0297
+    },
+    {
+      "feature": "BB_Lower",
+      "importance": 0.0144
+    },
+    {
+      "feature": "BB_Width",
+      "importance": 0.0123
+    },
+    {
+      "feature": "MACD_Signal",
+      "importance": 0.0058
+    }
+  ]
+}
