@@ -162,10 +162,13 @@ class ModelTrainer:
 
         logger.info(f"사용 피처: {len(self.feature_columns)}개")
 
-        # 2. 피처/타겟 분리
-        X = df[self.feature_columns].values
-        y_reg = df[TARGET_REGRESSION].values
-        y_clf = df[TARGET_CLASSIFICATION].values
+        # 2. 타겟 결측치 제외 (가장 최신 데이터 등)
+        train_df = df.dropna(subset=[TARGET_REGRESSION, TARGET_CLASSIFICATION]).copy()
+        
+        # 3. 피처/타겟 분리
+        X = train_df[self.feature_columns].values
+        y_reg = train_df[TARGET_REGRESSION].values
+        y_clf = train_df[TARGET_CLASSIFICATION].values
 
         # 3. 시간순 Train/Test 분할 (데이터 누수 방지)
         split_idx = int(len(X) * self.train_ratio)

@@ -108,9 +108,9 @@ class DataPreprocessor:
         # 4. 타겟 변수 생성
         df = self.create_targets(df)
 
-        # 5. 기술적 지표 계산에 의한 초기 NaN 행 제거
+        # 5. 기술적 지표 계산에 의한 초기 NaN 행 제거 (마지막 타겟 행은 유지)
         initial_len = len(df)
-        df = df.dropna(subset=FEATURE_COLUMNS + [TARGET_REGRESSION]).reset_index(drop=True)
+        df = df.dropna(subset=FEATURE_COLUMNS).reset_index(drop=True)
 
         logger.info(
             f"전처리 완료: {initial_len}행 → {len(df)}행 "
