@@ -1,6 +1,6 @@
 {
   "ticker": "005930.KS",
-  "trained_at": "2026-07-03T11:21:12.252116",
+  "trained_at": "2026-07-11T13:50:32.134567",
   "feature_columns": [
     "Open",
     "High",
@@ -53,56 +53,56 @@
     "n_jobs": "-1"
   },
   "regression_metrics": {
-    "mae": 35085.3,
-    "rmse": 40978.86,
-    "mape": 10.25
+    "mae": 94620.62,
+    "rmse": 101290.21,
+    "mape": 30.01
   },
   "classification_metrics": {
-    "accuracy": 0.52,
-    "precision": 0.5333,
-    "recall": 0.6154,
-    "f1": 0.5714
+    "accuracy": 0.4898,
+    "precision": 1.0,
+    "recall": 0.1071,
+    "f1": 0.1935
   },
   "feature_importance": [
     {
-      "feature": "MA20",
-      "importance": 0.3328
+      "feature": "Open",
+      "importance": 0.4013
     },
     {
       "feature": "High",
-      "importance": 0.2577
-    },
-    {
-      "feature": "Open",
-      "importance": 0.1809
+      "importance": 0.1721
     },
     {
       "feature": "Close",
-      "importance": 0.0649
-    },
-    {
-      "feature": "MA5",
-      "importance": 0.0457
-    },
-    {
-      "feature": "Low",
-      "importance": 0.0389
+      "importance": 0.1692
     },
     {
       "feature": "BB_Upper",
-      "importance": 0.0297
+      "importance": 0.077
+    },
+    {
+      "feature": "MA20",
+      "importance": 0.0675
+    },
+    {
+      "feature": "Low",
+      "importance": 0.0529
+    },
+    {
+      "feature": "MA5",
+      "importance": 0.0422
     },
     {
       "feature": "BB_Lower",
-      "importance": 0.0144
+      "importance": 0.0086
     },
     {
-      "feature": "BB_Width",
-      "importance": 0.0123
+      "feature": "MACD_Hist",
+      "importance": 0.0016
     },
     {
-      "feature": "MACD_Signal",
-      "importance": 0.0058
+      "feature": "Volume_MA5",
+      "importance": 0.001
     }
   ]
 }

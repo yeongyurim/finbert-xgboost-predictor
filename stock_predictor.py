@@ -163,20 +163,25 @@ class StockPredictionPipeline:
             logger.info("\n기존 학습 모델이 존재합니다. 학습을 건너뜁니다.")
             return self._predict_with_saved_model(ticker, stock_name, year)
 
-        # ── Step 2: 주가 데이터 수집 ──
+        # ── Step 2: 주가 데이터 수집 (오늘 기준 최근 1년) ──
         logger.info("\n[Step 2/6] 주가 데이터 수집")
-        start_date = f"{year}-01-01"
-        end_date = f"{year}-12-31"
+        today = datetime.now()
+        one_year_ago = today - pd.Timedelta(days=365)
+        start_date = one_year_ago.strftime("%Y-%m-%d")
+        end_date = today.strftime("%Y-%m-%d")
+        logger.info(f"  기간: {start_date} ~ {end_date} (최근 1년)")
         stock_df = self.collector.fetch_stock_data(ticker, start_date, end_date)
 
         if stock_df.empty:
-            raise ValueError(f"주가 데이터를 수집할 수 없습니다: {ticker} ({year}년)")
+            raise ValueError(f"주가 데이터를 수집할 수 없습니다: {ticker} ({start_date} ~ {end_date})")
 
         logger.info(f"  수집 완료: {len(stock_df)} 거래일")
 
-        # ── Step 3: 뉴스 크롤링 ──
+        # ── Step 3: 뉴스 크롤링 (동일 기간) ──
         logger.info("\n[Step 3/6] 네이버 뉴스 크롤링")
-        news_df = self.crawler.crawl_news(stock_name, year)
+        news_df = self.crawler.crawl_news(
+            stock_name, start_date=start_date, end_date=end_date
+        )
         logger.info(f"  크롤링 완료: {len(news_df)}건")
 
         # ── Step 4: 감성 분석 ──

@@ -2,19 +2,19 @@
 데이터 수집 모듈 (Data Collection Module)
 
 yfinance를 활용한 주가 데이터 수집과
-네이버 뉴스 검색 기반 크롤링 기능을 제공합니다.
+네이버 검색 API 기반 뉴스 수집 기능을 제공합니다.
 
 Classes:
     StockDataCollector: 종목 코드 해석 및 일별 주가 데이터 수집 (yfinance 기반)
-    NaverNewsCrawler: 네이버 뉴스 검색 결과 크롤링 (차단 방지 포함)
+    NaverNewsCrawler: 네이버 검색 API 기반 뉴스 수집 (공식 REST API)
 
 Usage:
     >>> collector = StockDataCollector()
     >>> info = collector.resolve_ticker("삼성전자")
     >>> stock_df = collector.fetch_stock_data("005930.KS", "2024-01-01", "2024-12-31")
 
-    >>> crawler = NaverNewsCrawler(max_pages_per_month=5)
-    >>> news_df = crawler.crawl_news("삼성전자", 2024)
+    >>> crawler = NaverNewsCrawler()
+    >>> news_df = crawler.crawl_news("삼성전자", start_date="2025-07-01", end_date="2026-07-01")
 """
 
 import time
@@ -26,7 +26,6 @@ from typing import Optional, Dict, List
 
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 
 try:
     import yfinance as yf
@@ -254,84 +253,172 @@ class StockDataCollector:
 
 class NaverNewsCrawler:
     """
-    네이버 뉴스 크롤링 클래스
+    네이버 뉴스 검색 API 클래스 (공식 REST API 사용)
 
-    네이버 검색 뉴스 탭을 활용하여 특정 종목의 연간 뉴스 기사 제목을 수집합니다.
-    월별로 분할 크롤링하며, 차단 방지를 위해 User-Agent 설정과
-    랜덤 딜레이(time.sleep)를 적용합니다.
+    네이버 Open API의 뉴스 검색 엔드포인트를 사용하여
+    특정 종목의 뉴스 기사 제목을 수집합니다.
+
+    웹 스크래핑과 달리 차단 위험이 없으며,
+    JSON 응답을 직접 파싱하므로 안정적이고 빠릅니다.
+
+    API 제한: 일 25,000건, 요청당 최대 100건, 시작 위치 최대 1000
 
     Attributes:
-        max_pages_per_month: 월별 최대 크롤링 페이지 수 (기본값: 5, 페이지당 10건)
+        client_id: 네이버 Open API Client ID
+        client_secret: 네이버 Open API Client Secret
+        max_results: 전체 최대 수집 건수 (기본: 1000)
 
     Methods:
-        crawl_news: 연간 뉴스 기사 제목 수집
+        crawl_news: 뉴스 기사 제목 수집
     """
 
-    # 차단 방지를 위한 User-Agent 목록
-    USER_AGENTS = [
-        (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/125.0.0.0 Safari/537.36"
-        ),
-        (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-            "Version/17.0 Safari/605.1.15"
-        ),
-        (
-            "Mozilla/5.0 (X11; Linux x86_64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-    ]
+    NAVER_API_URL = "https://openapi.naver.com/v1/search/news.json"
 
-    def __init__(self, max_pages_per_month: int = 5):
+    def __init__(
+        self,
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
+        max_results: int = 1000,
+        max_pages_per_month: int = 5,  # 하위 호환용 (무시됨)
+    ):
         """
         NaverNewsCrawler 초기화
 
         Args:
-            max_pages_per_month: 월별 최대 크롤링 페이지 수 (기본: 5)
-                각 페이지는 약 10개의 뉴스 항목을 포함합니다.
-                5페이지 × 12개월 = 최대 약 600건의 뉴스 수집 가능
+            client_id: 네이버 Open API Client ID
+                       (미지정 시 환경변수 NAVER_CLIENT_ID 사용)
+            client_secret: 네이버 Open API Client Secret
+                           (미지정 시 환경변수 NAVER_CLIENT_SECRET 사용)
+            max_results: 전체 최대 수집 건수 (기본: 1000, API 한도)
+            max_pages_per_month: 하위 호환을 위해 유지 (실제로 사용되지 않음)
         """
-        self.max_pages_per_month = max_pages_per_month
+        import os
+        self.client_id = (
+            client_id
+            or os.environ.get("NAVER_CLIENT_ID", "w4W0lisnfIJWAcqO2SrZ")
+        )
+        self.client_secret = (
+            client_secret
+            or os.environ.get("NAVER_CLIENT_SECRET", "7Ehd00vKls")
+        )
+        self.max_results = min(max_results, 1000)  # API 한도
         self.session = requests.Session()
 
-    def crawl_news(self, stock_name: str, year: int) -> pd.DataFrame:
+    def crawl_news(
+        self,
+        stock_name: str,
+        year: Optional[int] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> pd.DataFrame:
         """
-        특정 종목의 연간 뉴스 기사 제목을 수집합니다.
+        특정 종목의 뉴스 기사 제목을 수집합니다.
 
-        월별로 분할하여 크롤링하며, 각 월의 시작일~말일 범위에서
-        뉴스 기사 제목과 게재 일자를 수집합니다.
+        네이버 검색 API로 뉴스를 검색한 후, 지정된 날짜 범위에
+        해당하는 기사만 필터링하여 반환합니다.
 
         Args:
             stock_name: 종목명 (예: "삼성전자")
-            year: 대상 연도 (예: 2024)
+            year: 대상 연도 (예: 2024). start_date/end_date 미지정 시 사용
+            start_date: 수집 시작일 (형식: "YYYY-MM-DD")
+            end_date: 수집 종료일 (형식: "YYYY-MM-DD")
 
         Returns:
             pd.DataFrame: 수집된 뉴스 데이터
                 컬럼: date (datetime), title (str)
         """
-        logger.info(f"뉴스 크롤링 시작: '{stock_name}' {year}년")
+        # 날짜 범위 결정
+        if start_date and end_date:
+            dt_start = datetime.strptime(start_date, "%Y-%m-%d")
+            dt_end = datetime.strptime(end_date, "%Y-%m-%d")
+        elif year:
+            dt_start = datetime(year, 1, 1)
+            dt_end = datetime(year, 12, 31)
+        else:
+            dt_end = datetime.now()
+            dt_start = dt_end - timedelta(days=365)
+
+        logger.info(
+            f"뉴스 수집 시작 (네이버 검색 API): '{stock_name}' "
+            f"({dt_start.strftime('%Y-%m-%d')} ~ {dt_end.strftime('%Y-%m-%d')})"
+        )
+
         all_news: List[Dict[str, str]] = []
+        seen_titles = set()
 
-        for month in range(1, 13):
-            start_date = f"{year}.{month:02d}.01"
-
-            # 해당 월의 마지막 날 계산
-            if month == 12:
-                end_date = f"{year}.12.31"
+        # ── 월별 분할 쿼리로 과거~현재 뉴스를 고르게 수집 (유사도순) ──
+        current = dt_start.replace(day=1)
+        while current <= dt_end:
+            month_start = max(current, dt_start)
+            if current.month == 12:
+                month_end_dt = datetime(current.year, 12, 31)
             else:
-                last_day = datetime(year, month + 1, 1) - timedelta(days=1)
-                end_date = last_day.strftime("%Y.%m.%d")
+                month_end_dt = datetime(current.year, current.month + 1, 1) - timedelta(days=1)
+            month_end = min(month_end_dt, dt_end)
 
-            logger.info(f"  크롤링 중: {start_date} ~ {end_date}")
-            monthly_news = self._crawl_period(stock_name, start_date, end_date)
-            all_news.extend(monthly_news)
+            # 검색어에 월 포함 + 유사도순(sim)으로 과거 기사 유도
+            month_query = f"{stock_name} {current.year}년 {current.month}월"
+            query_added = 0
 
-            # 월별 크롤링 사이에 랜덤 대기
-            time.sleep(random.uniform(1.0, 2.5))
+            # 한 달에 최대 300건(3페이지) 정도만 수집 시도 (API 한도 절약)
+            for start_pos in range(1, 301, 100):
+                items, total = self._fetch_page(month_query, display=100, start=start_pos, sort="sim")
+                if not items:
+                    break
+
+                for item in items:
+                    pub_date = self._parse_pub_date(item.get("pubDate", ""))
+                    if pub_date is None:
+                        continue
+                    
+                    # 날짜가 해당 월에 속하는지 필터링 (정확도 향상)
+                    if month_start <= pub_date <= month_end:
+                        title = self._clean_title(item.get("title", ""))
+                        if title and len(title) >= 10 and title not in seen_titles:
+                            all_news.append({
+                                "date": pub_date.strftime("%Y-%m-%d"),
+                                "title": title,
+                            })
+                            seen_titles.add(title)
+                            query_added += 1
+
+                if start_pos + 100 > min(total, 1000):
+                    break
+                time.sleep(random.uniform(0.1, 0.2))
+
+            logger.info(f"  {current.year}년 {current.month}월: {query_added}건 (누적 {len(all_news)}건)")
+
+            # 다음 달로 이동
+            if current.month == 12:
+                current = datetime(current.year + 1, 1, 1)
+            else:
+                current = datetime(current.year, current.month + 1, 1)
+
+        # ── 최신 뉴스 보충 (sort=date) ──
+        # 과거 뉴스 수집 후 최근 트렌드를 정확히 반영하기 위해 최근 뉴스를 추가
+        recent_added = 0
+        for start_pos in range(1, 301, 100):
+            items, total = self._fetch_page(f"{stock_name} 주가", display=100, start=start_pos, sort="date")
+            if not items:
+                break
+            for item in items:
+                pub_date = self._parse_pub_date(item.get("pubDate", ""))
+                if pub_date is None:
+                    continue
+                if dt_start <= pub_date <= dt_end:
+                    title = self._clean_title(item.get("title", ""))
+                    if title and len(title) >= 10 and title not in seen_titles:
+                        all_news.append({
+                            "date": pub_date.strftime("%Y-%m-%d"),
+                            "title": title,
+                        })
+                        seen_titles.add(title)
+                        recent_added += 1
+            if start_pos + 100 > min(total, 1000):
+                break
+            time.sleep(random.uniform(0.1, 0.2))
+            
+        logger.info(f"  최신 보충: {recent_added}건 (최종 누적 {len(all_news)}건)")
 
         if not all_news:
             logger.warning("수집된 뉴스가 없습니다.")
@@ -341,260 +428,112 @@ class NaverNewsCrawler:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         df = df.dropna(subset=["date"])
         df = df.sort_values("date").reset_index(drop=True)
+        # 이미 set으로 걸렀지만 만약의 경우를 위해 중복 제거
         df = df.drop_duplicates(subset=["title"], keep="first").reset_index(drop=True)
 
-        logger.info(f"뉴스 크롤링 완료: 총 {len(df)}건 수집")
+        logger.info(f"뉴스 수집 완료: 총 {len(df)}건 (API)")
         return df
 
-    def _crawl_period(
-        self, query: str, start_date: str, end_date: str
-    ) -> List[Dict[str, str]]:
+    def _fetch_page(
+        self, query: str, display: int = 100, start: int = 1, sort: str = "date"
+    ) -> tuple:
         """
-        특정 기간의 뉴스를 크롤링합니다 (내부 메서드).
-
-        네이버 검색 뉴스 탭에서 날짜 범위 필터를 적용하여
-        페이지별로 뉴스 기사 제목과 일자를 추출합니다.
+        네이버 검색 API에서 뉴스 한 페이지를 가져옵니다.
 
         Args:
-            query: 검색어 (종목명)
-            start_date: 시작일 (형식: "YYYY.MM.DD")
-            end_date: 종료일 (형식: "YYYY.MM.DD")
+            query: 검색어
+            display: 한 번에 가져올 결과 수 (최대 100)
+            start: 시작 위치 (1~1000)
+            sort: 정렬 방식 ('sim' 유사도순, 'date' 최신순)
 
         Returns:
-            list[dict]: 뉴스 항목 리스트 (각 항목은 {'date': ..., 'title': ...})
+            tuple: (items 리스트, total 검색 결과 수)
         """
-        news_list: List[Dict[str, str]] = []
+        headers = {
+            "X-Naver-Client-Id": self.client_id,
+            "X-Naver-Client-Secret": self.client_secret,
+        }
+        params = {
+            "query": query,
+            "display": display,
+            "start": start,
+            "sort": sort,
+        }
 
-        for page_idx in range(self.max_pages_per_month):
-            start_offset = page_idx * 10 + 1
+        try:
+            resp = self.session.get(
+                self.NAVER_API_URL,
+                headers=headers,
+                params=params,
+                timeout=10,
+            )
 
-            params = {
-                "where": "news",
-                "query": query,
-                "sm": "tab_opt",
-                "sort": "1",       # 최신순 정렬
-                "photo": "0",
-                "field": "0",
-                "pd": "3",         # 기간 직접 입력
-                "ds": start_date,
-                "de": end_date,
-                "start": str(start_offset),
-            }
-
-            headers = {
-                "User-Agent": random.choice(self.USER_AGENTS),
-                "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
-                "Referer": "https://search.naver.com/",
-            }
-
-            try:
+            if resp.status_code == 401:
+                logger.error("네이버 API 인증 실패: Client ID/Secret을 확인하세요.")
+                return [], 0
+            elif resp.status_code == 429:
+                logger.warning("네이버 API 요청 한도 초과, 1초 대기 후 재시도")
+                time.sleep(1)
                 resp = self.session.get(
-                    "https://search.naver.com/search.naver",
-                    params=params,
+                    self.NAVER_API_URL,
                     headers=headers,
-                    timeout=15,
+                    params=params,
+                    timeout=10,
                 )
-                resp.raise_for_status()
 
-                soup = BeautifulSoup(resp.text, "lxml")
-                items = self._extract_news_items(soup)
+            resp.raise_for_status()
+            data = resp.json()
 
-                if not items:
-                    logger.debug(f"  페이지 {page_idx + 1}: 뉴스 항목 없음, 중단")
-                    break
+            return data.get("items", []), data.get("total", 0)
 
-                for item in items:
-                    parsed = self._parse_news_item(item, start_date)
-                    if parsed:
-                        news_list.append(parsed)
-
-                # 페이지 간 랜덤 대기 (차단 방지)
-                time.sleep(random.uniform(0.5, 1.5))
-
-            except requests.exceptions.HTTPError as e:
-                logger.warning(f"  HTTP 오류 (page {page_idx + 1}): {e}")
-                if e.response is not None and e.response.status_code == 429:
-                    logger.warning("  요청 제한 감지, 10초 대기 후 재시도")
-                    time.sleep(10)
-                continue
-            except requests.exceptions.RequestException as e:
-                logger.warning(f"  요청 오류 (page {page_idx + 1}): {e}")
-                continue
-            except Exception as e:
-                logger.warning(f"  파싱 오류 (page {page_idx + 1}): {e}")
-                continue
-
-        return news_list
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"  API 요청 오류: {e}")
+            return [], 0
 
     @staticmethod
-    def _extract_news_items(soup: BeautifulSoup) -> list:
+    def _parse_pub_date(pub_date_str: str) -> Optional[datetime]:
         """
-        BeautifulSoup 객체에서 뉴스 항목 요소들을 추출합니다.
-        네이버 검색 결과의 다양한 HTML 구조를 순차적으로 시도합니다.
-
-        2026년 기준 네이버 뉴스 검색은 SDS 컴포넌트 기반 UI로 개편되어
-        div.api_subject_bx 가 개별 뉴스 아이템의 최상위 컨테이너입니다.
+        네이버 API의 pubDate(RFC 822 형식)를 datetime으로 변환합니다.
 
         Args:
-            soup: 파싱된 HTML
+            pub_date_str: "Mon, 09 Jul 2026 12:00:00 +0900" 형식
 
         Returns:
-            list: BeautifulSoup Tag 객체 리스트
+            datetime 또는 None
         """
-        # 네이버 검색 결과의 뉴스 아이템 셀렉터 (우선순위 순)
-        # 2026년 현재: div.api_subject_bx가 개별 뉴스 카드
-        selectors = [
-            "div.api_subject_bx",
-            "div.news_area",
-            "div.news_wrap",
-            "li.bx",
-            "div.news_contents",
-        ]
-        for selector in selectors:
-            items = soup.select(selector)
-            if items:
-                logger.debug(f"    셀렉터 '{selector}'로 {len(items)}건 추출")
-                return items
-        return []
-
-    @staticmethod
-    def _parse_news_item(item, fallback_date: str) -> Optional[Dict[str, str]]:
-        """
-        개별 뉴스 항목에서 제목과 날짜를 추출합니다.
-
-        2026년 기준 네이버 뉴스 검색 결과의 제목은:
-        - <span class="...sds-comps-text-type-headline1"> 에 있거나
-        - <a class="...EqVldlKiXvspTtpN"> (기사 제목 링크, 해시 클래스) 에 존재합니다.
-        해시 클래스는 빌드마다 변경될 수 있으므로 여러 전략을 폴백으로 사용합니다.
-
-        Args:
-            item: BeautifulSoup Tag 객체 (개별 뉴스 항목)
-            fallback_date: 날짜 파싱 실패 시 대체 날짜 (형식: "YYYY.MM.DD")
-
-        Returns:
-            dict: {'date': 'YYYY-MM-DD', 'title': '뉴스 제목'} 또는 None
-        """
-        title = None
-
-        # ── 제목 추출 전략 (우선순위 순) ──
-
-        # 전략 1: headline 클래스가 포함된 span (2026 SDS UI)
-        headline_tag = item.select_one("span[class*='headline']")
-        if headline_tag:
-            title = headline_tag.get_text(strip=True)
-
-        # 전략 2: 기존 레거시 셀렉터
-        if not title:
-            for sel in ["a.news_tit", "a.api_txt_lines", "a[class*='tit']"]:
-                tag = item.select_one(sel)
-                if tag:
-                    title = tag.get_text(strip=True)
-                    break
-
-        # 전략 3: 외부 뉴스 링크 중 본문 미리보기가 아닌 제목 링크 추출
-        # api_subject_bx 내부에서 뉴스 제목 링크는 보통 첫 번째
-        # 외부 도메인(naver.com이 아닌) href를 가진 <a> 태그
-        if not title:
-            for a_tag in item.select("a[href]"):
-                href = a_tag.get("href", "")
-                text = a_tag.get_text(strip=True)
-                # 뉴스 제목 후보 필터링:
-                # - 외부 URL (naver.com 도메인 제외)
-                # - 텍스트 길이 15~100자 (너무 짧으면 UI 요소, 너무 길면 본문 snippet)
-                # - 광고/UI 키워드 제외
-                if (
-                    href.startswith("http")
-                    and "naver.com" not in href
-                    and "naver.net" not in href
-                    and 15 < len(text) <= 100
-                    and not any(kw in text for kw in ["클립", "Keep에", "포인트", "구독"])
-                ):
-                    title = text
-                    break
-
-        if not title:
+        if not pub_date_str:
             return None
+        try:
+            from email.utils import parsedate_to_datetime
+            dt = parsedate_to_datetime(pub_date_str)
+            # timezone-aware → naive (다른 모듈과 호환)
+            return dt.replace(tzinfo=None)
+        except (ValueError, TypeError):
+            pass
 
-        # 날짜 추출
-        date_str = NaverNewsCrawler._extract_date(item, fallback_date)
-
-        return {"date": date_str, "title": title}
+        # 폴백: 직접 파싱
+        for fmt in ["%a, %d %b %Y %H:%M:%S %z", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d"]:
+            try:
+                return datetime.strptime(pub_date_str, fmt).replace(tzinfo=None)
+            except ValueError:
+                continue
+        return None
 
     @staticmethod
-    def _extract_date(item, fallback_date: str) -> str:
+    def _clean_title(raw_title: str) -> str:
         """
-        뉴스 항목에서 날짜를 추출하고 표준 형식(YYYY-MM-DD)으로 변환합니다.
+        API 응답의 제목에서 HTML 태그와 엔티티를 제거합니다.
 
-        상대 날짜("3일 전", "2시간 전" 등)와 절대 날짜("2024.01.15.")를
-        모두 처리합니다.
-
-        2026년 기준 네이버 뉴스 검색의 날짜 정보는:
-        - <span class="...sds-comps-profile-info-subtext"> 에 "2024.01.31." 형태로 표시
-        - 기존 <span class="info"> 는 더 이상 사용되지 않음
+        네이버 검색 API는 검색어 매칭 부분을 <b> 태그로 감싸서 반환하며,
+        일부 특수문자는 HTML 엔티티(&amp;, &quot; 등)로 인코딩됩니다.
 
         Args:
-            item: BeautifulSoup Tag 객체
-            fallback_date: 대체 날짜
+            raw_title: API 원본 제목
 
         Returns:
-            str: "YYYY-MM-DD" 형식의 날짜 문자열
+            str: 정제된 제목
         """
-        # ── 날짜가 포함될 수 있는 태그 후보 수집 ──
-        # 2026 SDS UI: span.sds-comps-profile-info-subtext
-        # 레거시: span.info
-        date_tags = item.select("span[class*='profile-info-subtext']")
-        if not date_tags:
-            date_tags = item.select("span.info")
-        if not date_tags:
-            # 최후 폴백: 아이템 내 모든 span에서 날짜 패턴 탐색
-            date_tags = item.select("span")
-
-        for tag in date_tags:
-            text = tag.get_text(strip=True)
-
-            # 빈 텍스트 스킵
-            if not text:
-                continue
-
-            # 언론사 이름 필터 (숫자나 '전'이 포함되지 않으면 스킵)
-            if not re.search(r"[\d전]", text):
-                continue
-
-            # 상대 날짜 처리
-            now = datetime.now()
-
-            minute_match = re.search(r"(\d+)분\s*전", text)
-            if minute_match:
-                return now.strftime("%Y-%m-%d")
-
-            hour_match = re.search(r"(\d+)시간\s*전", text)
-            if hour_match:
-                return now.strftime("%Y-%m-%d")
-
-            day_match = re.search(r"(\d+)일\s*전", text)
-            if day_match:
-                days = int(day_match.group(1))
-                return (now - timedelta(days=days)).strftime("%Y-%m-%d")
-
-            week_match = re.search(r"(\d+)주\s*전", text)
-            if week_match:
-                weeks = int(week_match.group(1))
-                return (now - timedelta(weeks=weeks)).strftime("%Y-%m-%d")
-
-            # 절대 날짜 파싱 (다양한 형식 시도)
-            # "2024.01.31." 또는 "2024.1.31" 등
-            date_patterns = [
-                r"(\d{4})\.(\d{1,2})\.(\d{1,2})",
-            ]
-            for pattern in date_patterns:
-                m = re.search(pattern, text)
-                if m:
-                    try:
-                        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-                        return datetime(y, mo, d).strftime("%Y-%m-%d")
-                    except ValueError:
-                        continue
-
-        # 모든 시도 실패 시 fallback 날짜 사용
-        return fallback_date.replace(".", "-")
+        import html
+        title = html.unescape(raw_title)
+        title = re.sub(r"<[^>]+>", "", title)
+        return title.strip()
