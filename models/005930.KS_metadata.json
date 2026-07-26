@@ -1,6 +1,6 @@
 {
   "ticker": "005930.KS",
-  "trained_at": "2026-07-11T13:50:32.134567",
+  "trained_at": "2026-07-22T19:41:23.367371",
   "feature_columns": [
     "Open",
     "High",
@@ -53,56 +53,56 @@
     "n_jobs": "-1"
   },
   "regression_metrics": {
-    "mae": 94620.62,
-    "rmse": 101290.21,
-    "mape": 30.01
+    "mae": 33315.66,
+    "rmse": 42162.75,
+    "mape": 10.26
   },
   "classification_metrics": {
-    "accuracy": 0.4898,
-    "precision": 1.0,
-    "recall": 0.1071,
-    "f1": 0.1935
+    "accuracy": 0.4694,
+    "precision": 0.52,
+    "recall": 0.4815,
+    "f1": 0.5
   },
   "feature_importance": [
     {
-      "feature": "Open",
-      "importance": 0.4013
-    },
-    {
-      "feature": "High",
-      "importance": 0.1721
-    },
-    {
-      "feature": "Close",
-      "importance": 0.1692
-    },
-    {
-      "feature": "BB_Upper",
-      "importance": 0.077
-    },
-    {
       "feature": "MA20",
-      "importance": 0.0675
+      "importance": 0.5993
     },
     {
       "feature": "Low",
-      "importance": 0.0529
+      "importance": 0.1107
     },
     {
       "feature": "MA5",
-      "importance": 0.0422
+      "importance": 0.0725
+    },
+    {
+      "feature": "High",
+      "importance": 0.0706
+    },
+    {
+      "feature": "Close",
+      "importance": 0.0659
+    },
+    {
+      "feature": "BB_Upper",
+      "importance": 0.037
+    },
+    {
+      "feature": "Open",
+      "importance": 0.034
     },
     {
       "feature": "BB_Lower",
-      "importance": 0.0086
+      "importance": 0.0062
+    },
+    {
+      "feature": "Volume",
+      "importance": 0.0005
     },
     {
       "feature": "MACD_Hist",
-      "importance": 0.0016
-    },
-    {
-      "feature": "Volume_MA5",
-      "importance": 0.001
+      "importance": 0.0004
     }
   ]
 }

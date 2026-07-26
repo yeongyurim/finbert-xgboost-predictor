@@ -81,6 +81,8 @@ class PredictionResult {
   final double trendProbability;
   final double avgSentimentScore;
   final Map<String, dynamic> modelMetrics;
+  final int? lastClosePrice;
+  final String? lastCloseDate;
 
   PredictionResult({
     required this.ticker,
@@ -91,6 +93,8 @@ class PredictionResult {
     required this.trendProbability,
     required this.avgSentimentScore,
     required this.modelMetrics,
+    this.lastClosePrice,
+    this.lastCloseDate,
   });
 
   factory PredictionResult.fromJson(Map<String, dynamic> json) {
@@ -106,6 +110,8 @@ class PredictionResult {
           (json['avg_sentiment_score'] as num?)?.toDouble() ?? 0.0,
       modelMetrics:
           (json['model_metrics'] as Map<String, dynamic>?) ?? {},
+      lastClosePrice: (json['last_close_price'] as num?)?.toInt(),
+      lastCloseDate: json['last_close_date'],
     );
   }
 
@@ -152,38 +158,7 @@ class _PredictionScreenState extends State<PredictionScreen>
   late Animation<double> _resultFadeIn;
   late Animation<Offset> _resultSlideUp;
 
-  // 터미널 로딩 메시지 (단계별)
-  static const _loadingMessages = [
-    '> stock_predictor.py --stock "\${stock}" --year 2024',
-    '',
-    '[Step 1/6] 종목 정보 조회 중...',
-    '  ✓ ticker resolved → \${ticker}',
-    '',
-    '[Step 2/6] yfinance 주가 데이터 수집 중...',
-    '  ↓ downloading OHLCV data...',
-    '  ✓ 245 거래일 수집 완료',
-    '',
-    '[Step 3/6] 네이버 뉴스 크롤링 중...',
-    '  ↓ crawling search.naver.com ...',
-    '  ↓ month 01/12 ... 03/12 ... 06/12 ...',
-    '  ✓ 482건 뉴스 수집 완료',
-    '',
-    '[Step 4/6] KR-FinBert-SC 감성 분석 중...',
-    '  ↓ loading snunlp/KR-FinBert-SC ...',
-    '  ↓ analyzing 482 articles in batches ...',
-    '  ✓ 감성 분석 완료 (avg: 0.12)',
-    '',
-    '[Step 5/6] XGBoost 모델 학습 중...',
-    '  ↓ preprocessing: MA, RSI, MACD, Bollinger ...',
-    '  ↓ training XGBRegressor (200 trees) ...',
-    '  ↓ training XGBClassifier ...',
-    '  ✓ 모델 저장: models/\${ticker}_regressor.pkl',
-    '',
-    '[Step 6/6] 다음 거래일 예측 수행 중...',
-    '  ↓ loading model & scaler ...',
-    '  ↓ inference ...',
-    '',
-  ];
+  // 실제 백엔드 연동으로 대체되어 가짜 메시지 배열 삭제
 
   @override
   void initState() {
@@ -250,42 +225,27 @@ class _PredictionScreenState extends State<PredictionScreen>
       _errorMessage = '';
     });
 
-    // 터미널 타이핑 시작
-    _startTerminalTyping(stock);
+    // 실시간 폴링을 위한 애니메이션 타이머 (깜빡임 용도)
+    _showWaitingDots();
 
     try {
-      final uri = Uri.parse('$kApiBaseUrl/predict').replace(
+      // 1. 비동기 작업 시작 요청 (POST)
+      final uri = Uri.parse('$kApiBaseUrl/predict/async').replace(
         queryParameters: {'stock': stock},
       );
 
-      final response = await http.get(uri).timeout(
-            const Duration(minutes: 15),
+      final response = await http.post(uri).timeout(
+            const Duration(seconds: 15),
           );
-
-      _typingTimer?.cancel();
 
       if (response.statusCode == 200) {
         final json = jsonDecode(utf8.decode(response.bodyBytes));
-        final result = PredictionResult.fromJson(json);
-
-        // 완료 메시지 추가
-        _addTerminalLineInstant('');
-        _addTerminalLineInstant(
-          '══════════════════════════════════════',
-        );
-        _addTerminalLineInstant('  ✅ 예측 완료!');
-        _addTerminalLineInstant(
-          '══════════════════════════════════════',
-        );
-
-        await Future.delayed(const Duration(milliseconds: 800));
-
-        setState(() {
-          _state = ScreenState.result;
-          _result = result;
-        });
-        _resultAnimController.forward(from: 0);
+        final taskId = json['task_id'];
+        
+        // 2. 실시간 상태 폴링 시작
+        _pollStatus(taskId);
       } else {
+        _typingTimer?.cancel();
         final body = jsonDecode(utf8.decode(response.bodyBytes));
         throw Exception(body['detail'] ?? 'HTTP ${response.statusCode}');
       }
@@ -314,56 +274,54 @@ class _PredictionScreenState extends State<PredictionScreen>
     }
   }
 
-  // ── 터미널 타이핑 애니메이션 ──
-  void _startTerminalTyping(String stock) {
-    // 템플릿 치환
-    final messages = _loadingMessages.map((msg) {
-      return msg
-          .replaceAll('\${stock}', stock)
-          .replaceAll('\${ticker}', '${stock}.KS');
-    }).toList();
+  // ── 실시간 상태 폴링 ──
+  Future<void> _pollStatus(String taskId) async {
+    _typingTimer?.cancel();
+    int lastLogIndex = 0;
+    
+    _typingTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) async {
+      try {
+        final uri = Uri.parse('$kApiBaseUrl/predict/status/$taskId');
+        final response = await http.get(uri).timeout(const Duration(seconds: 5));
+        
+        if (response.statusCode == 200) {
+          final json = jsonDecode(utf8.decode(response.bodyBytes));
+          final status = json['status'];
+          final List<dynamic> logs = json['logs'] ?? [];
+          
+          if (logs.length > lastLogIndex) {
+            setState(() {
+              for (int i = lastLogIndex; i < logs.length; i++) {
+                _terminalLines.add(logs[i].toString());
+              }
+              _currentTypingLine = '';
+            });
+            lastLogIndex = logs.length;
+            _scrollTerminalToBottom();
+          }
 
-    _typingTimer = Timer.periodic(
-      const Duration(milliseconds: 25),
-      (timer) {
-        if (_currentLineIndex >= messages.length) {
-          // 모든 메시지 타이핑 완료 → 대기 애니메이션
-          _showWaitingDots();
-          timer.cancel();
-          return;
+          if (status == 'completed') {
+            timer.cancel();
+            final result = PredictionResult.fromJson(json['result']);
+            
+            await Future.delayed(const Duration(milliseconds: 800));
+            setState(() {
+              _state = ScreenState.result;
+              _result = result;
+            });
+            _resultAnimController.forward(from: 0);
+          } else if (status == 'failed') {
+            timer.cancel();
+            setState(() {
+              _state = ScreenState.error;
+              _errorMessage = json['error'] ?? '알 수 없는 오류가 발생했습니다.';
+            });
+          }
         }
-
-        final currentLine = messages[_currentLineIndex];
-
-        if (currentLine.isEmpty) {
-          // 빈 줄은 즉시 추가
-          setState(() {
-            _terminalLines.add('');
-            _currentLineIndex++;
-            _currentCharIndex = 0;
-            _currentTypingLine = '';
-          });
-          _scrollTerminalToBottom();
-          return;
-        }
-
-        if (_currentCharIndex < currentLine.length) {
-          setState(() {
-            _currentTypingLine += currentLine[_currentCharIndex];
-            _currentCharIndex++;
-          });
-        } else {
-          // 한 줄 완성
-          setState(() {
-            _terminalLines.add(_currentTypingLine);
-            _currentLineIndex++;
-            _currentCharIndex = 0;
-            _currentTypingLine = '';
-          });
-          _scrollTerminalToBottom();
-        }
-      },
-    );
+      } catch (e) {
+        // 폴링 중 발생한 일시적 네트워크 에러는 무시하고 계속 재시도
+      }
+    });
   }
 
   // 서버 응답 대기 중 점 애니메이션
@@ -798,33 +756,28 @@ class _PredictionScreenState extends State<PredictionScreen>
               _resultHeader(r),
               const SizedBox(height: 24),
 
-              // ── 예측 종가 (메인 카드) ──
+              // ── 예측 종가 (XGBRegressor) ──
               _glowCard(
-                borderColor: trendColor,
+                borderColor: TermColors.border,
                 child: Column(
                   children: [
                     Text(
-                      '예측 종가',
+                      '예측 종가 (XGBRegressor)',
                       style: GoogleFonts.jetBrainsMono(
                         color: TermColors.textDim,
                         fontSize: 12,
                         letterSpacing: 1,
                       ),
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 12),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         Text(
-                          trendIcon,
-                          style: TextStyle(color: trendColor, fontSize: 28),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
                           priceFormat.format(r.predictedPrice),
                           style: GoogleFonts.jetBrainsMono(
-                            color: trendColor,
+                            color: TermColors.cyan,
                             fontSize: 36,
                             fontWeight: FontWeight.bold,
                           ),
@@ -834,43 +787,50 @@ class _PredictionScreenState extends State<PredictionScreen>
                           child: Text(
                             '원',
                             style: GoogleFonts.jetBrainsMono(
-                              color: trendColor.withOpacity(0.6),
+                              color: TermColors.cyan.withOpacity(0.6),
                               fontSize: 16,
                             ),
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: trendColor.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(4),
+                    if (r.lastClosePrice != null && r.lastCloseDate != null) ...[
+                      const SizedBox(height: 16),
+                      Divider(color: TermColors.border, height: 1),
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            '기준 종가 (${r.lastCloseDate}): ',
+                            style: GoogleFonts.jetBrainsMono(
+                              color: TermColors.textDim,
+                              fontSize: 12,
+                            ),
+                          ),
+                          Text(
+                            '${priceFormat.format(r.lastClosePrice)} 원',
+                            style: GoogleFonts.jetBrainsMono(
+                              color: TermColors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
                       ),
-                      child: Text(
-                        '${r.predictedTrend} 예측',
-                        style: GoogleFonts.jetBrainsMono(
-                          color: trendColor,
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
+                    ],
                   ],
                 ),
               ),
               const SizedBox(height: 16),
 
-              // ── 상승 확률 + 감성 스코어 (2열) ──
+              // ── 2열: 추세 예측 (XGBClassifier) + 감성 스코어 ──
               Row(
                 children: [
                   Expanded(
                     child: _metricCard(
-                      label: '상승 확률',
-                      value:
-                          '${(r.trendProbability * 100).toStringAsFixed(1)}%',
+                      label: '추세 예측 (XGBClassifier)',
+                      value: '$trendIcon ${r.predictedTrend} ${(r.trendProbability * 100).toStringAsFixed(1)}%',
                       progress: r.trendProbability,
                       color: r.trendProbability >= 0.5
                           ? TermColors.green
@@ -880,7 +840,7 @@ class _PredictionScreenState extends State<PredictionScreen>
                   const SizedBox(width: 12),
                   Expanded(
                     child: _metricCard(
-                      label: '감성 스코어',
+                      label: '감성 스코어 (KR-FinBert)',
                       value: r.avgSentimentScore.toStringAsFixed(4),
                       progress:
                           (r.avgSentimentScore + 1) / 2, // -1~1 → 0~1

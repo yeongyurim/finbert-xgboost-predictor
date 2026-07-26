@@ -177,11 +177,9 @@ async def predict_sync(
         description='종목명 또는 종목코드 (예: "삼성전자", "005930", "005930.KS")',
         examples=["삼성전자", "005930", "AAPL"],
     ),
-    year: int = Query(
-        default=datetime.now().year,
-        description="학습 대상 연도 (미지정 시 오늘 기준 최근 1년 자동 분석)",
-        ge=2000,
-        le=2030,
+    target_date: Optional[str] = Query(
+        default=None,
+        description="예측 대상 날짜 (YYYY-MM-DD). 미지정 시 장 시간에 따라 자동 결정: 장중→오늘, 장후→다음 거래일",
     ),
     skip_train: bool = Query(
         default=False,
@@ -198,7 +196,8 @@ async def predict_sync(
     **Flutter 호출 예시**:
     ```
     GET http://localhost:8000/predict?stock=삼성전자
-    GET http://localhost:8000/predict?stock=005930&year=2024&skip_train=true
+    GET http://localhost:8000/predict?stock=삼성전자&target_date=2026-07-16
+    GET http://localhost:8000/predict?stock=005930&skip_train=true
     ```
     """
     if pipeline is None:
@@ -212,7 +211,7 @@ async def predict_sync(
         result = await asyncio.to_thread(
             pipeline.run,
             stock_input=stock,
-            year=year,
+            target_date=target_date,
             skip_train=skip_train,
         )
         return JSONResponse(content=_serialize_result(result))
@@ -250,7 +249,7 @@ async def predict_async(
         description='종목명 또는 종목코드',
         examples=["삼성전자", "005930"],
     ),
-    year: int = Query(default=datetime.now().year, ge=2000, le=2030),
+    target_date: Optional[str] = Query(default=None),
     skip_train: bool = Query(default=False),
 ):
     """
@@ -273,16 +272,17 @@ async def predict_async(
         "task_id": task_id,
         "status": TaskStatus.PENDING,
         "stock": stock,
-        "year": year,
+        "target_date": target_date,
         "skip_train": skip_train,
         "created_at": datetime.now().isoformat(),
         "completed_at": None,
         "result": None,
         "error": None,
+        "logs": [],
     }
 
     # 백그라운드 태스크 시작
-    asyncio.create_task(_run_prediction_task(task_id, stock, year, skip_train))
+    asyncio.create_task(_run_prediction_task(task_id, stock, target_date, skip_train))
 
     return {
         "task_id": task_id,
@@ -320,9 +320,10 @@ async def predict_status(task_id: str):
         "task_id": task["task_id"],
         "status": task["status"],
         "stock": task["stock"],
-        "year": task["year"],
+        "target_date": task.get("target_date"),
         "created_at": task["created_at"],
         "completed_at": task["completed_at"],
+        "logs": task.get("logs", []),
     }
 
     if task["status"] == TaskStatus.COMPLETED:
@@ -335,7 +336,7 @@ async def predict_status(task_id: str):
 
 # ─── 백그라운드 작업 실행 함수 ──────────────────────────────
 async def _run_prediction_task(
-    task_id: str, stock: str, year: int, skip_train: bool
+    task_id: str, stock: str, target_date: Optional[str], skip_train: bool
 ) -> None:
     """
     백그라운드에서 예측 파이프라인을 실행합니다.
@@ -344,14 +345,19 @@ async def _run_prediction_task(
     완료 또는 실패 시 결과/에러를 저장합니다.
     """
     task_store[task_id]["status"] = TaskStatus.RUNNING
-    logger.info(f"[Task {task_id[:8]}] 백그라운드 예측 시작: {stock} ({year}년)")
+    logger.info(f"[Task {task_id[:8]}] 백그라운드 예측 시작: {stock} (대상: {target_date or '자동'})")
+
+    def append_log(msg: str):
+        if task_id in task_store:
+            task_store[task_id].setdefault("logs", []).append(msg)
 
     try:
         result = await asyncio.to_thread(
             pipeline.run,
             stock_input=stock,
-            year=year,
+            target_date=target_date,
             skip_train=skip_train,
+            progress_callback=append_log,
         )
 
         task_store[task_id]["status"] = TaskStatus.COMPLETED

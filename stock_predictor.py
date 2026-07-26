@@ -131,15 +131,18 @@ class StockPredictionPipeline:
     def run(
         self,
         stock_input: str,
-        year: int,
+        target_date: Optional[str] = None,
         skip_train: bool = False,
+        progress_callback: Optional[callable] = None,
     ) -> Dict[str, Any]:
         """
         전체 예측 파이프라인을 실행합니다.
 
         Args:
             stock_input: 종목명 또는 종목코드 (예: "삼성전자", "005930")
-            year: 학습 대상 연도 (예: 2024)
+            target_date: 예측 대상 날짜 (YYYY-MM-DD). None이면 자동 결정:
+                         - 장 운영 시간(09:00~15:30 KST) 중 → 오늘 종가 예측
+                         - 장 마감 후 / 주말 → 다음 거래일 종가 예측
             skip_train: True이면 기존 모델 사용, 학습 스킵
 
         Returns:
@@ -147,62 +150,74 @@ class StockPredictionPipeline:
                 - ticker, target_date, predicted_trend, predicted_price,
                   avg_sentiment_score, model_metrics 등
         """
-        logger.info("=" * 60)
-        logger.info(f"주가 예측 파이프라인 시작: {stock_input} ({year}년)")
-        logger.info("=" * 60)
+        # 예측 대상일 자동 결정
+        from modules.predictor import StockPredictor
+        if target_date is None:
+            target_date = StockPredictor.get_smart_target_date()
+
+        def _log(msg: str):
+            logger.info(msg)
+            if progress_callback:
+                progress_callback(msg)
+
+        _log("=" * 60)
+        _log(f"> stock_predictor.py --stock \"{stock_input}\" --date {target_date}")
+        _log("=" * 60)
 
         # ── Step 1: 종목 정보 해석 ──
-        logger.info("\n[Step 1/6] 종목 정보 해석")
+        _log("\n[Step 1/6] 종목 정보 조회 중...")
         stock_info = self.collector.resolve_ticker(stock_input)
         ticker = stock_info["ticker"]
         stock_name = stock_info["name"]
-        logger.info(f"  종목: {stock_name} ({ticker}) / {stock_info['market']}")
+        _log(f"  ✓ ticker resolved -> {ticker} ({stock_name} / {stock_info['market']})")
 
         # ── 기존 모델 사용 (skip_train) ──
         if skip_train and self.trainer.is_model_saved(ticker):
-            logger.info("\n기존 학습 모델이 존재합니다. 학습을 건너뜁니다.")
-            return self._predict_with_saved_model(ticker, stock_name, year)
+            _log("\n기존 학습 모델이 존재합니다. 학습을 건너뜁니다.")
+            return self._predict_with_saved_model(ticker, stock_name, target_date, progress_callback)
 
         # ── Step 2: 주가 데이터 수집 (오늘 기준 최근 1년) ──
-        logger.info("\n[Step 2/6] 주가 데이터 수집")
+        _log("\n[Step 2/6] yfinance 주가 데이터 수집 중...")
         today = datetime.now()
         one_year_ago = today - pd.Timedelta(days=365)
         start_date = one_year_ago.strftime("%Y-%m-%d")
-        end_date = today.strftime("%Y-%m-%d")
-        logger.info(f"  기간: {start_date} ~ {end_date} (최근 1년)")
+        end_date = (today + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        _log(f"  ↓ downloading OHLCV data... ({start_date} ~ {today.strftime('%Y-%m-%d')})")
         stock_df = self.collector.fetch_stock_data(ticker, start_date, end_date)
 
         if stock_df.empty:
             raise ValueError(f"주가 데이터를 수집할 수 없습니다: {ticker} ({start_date} ~ {end_date})")
 
-        logger.info(f"  수집 완료: {len(stock_df)} 거래일")
+        _log(f"  ✓ {len(stock_df)} 거래일 수집 완료")
 
         # ── Step 3: 뉴스 크롤링 (동일 기간) ──
-        logger.info("\n[Step 3/6] 네이버 뉴스 크롤링")
+        _log("\n[Step 3/6] 네이버 뉴스 크롤링 중...")
+        _log("  ↓ crawling search.naver.com ...")
         news_df = self.crawler.crawl_news(
             stock_name, start_date=start_date, end_date=end_date
         )
-        logger.info(f"  크롤링 완료: {len(news_df)}건")
+        _log(f"  ✓ {len(news_df)}건 뉴스 수집 완료")
 
         # ── Step 4: 감성 분석 ──
-        logger.info("\n[Step 4/6] 뉴스 감성 분석")
+        _log("\n[Step 4/6] KR-FinBert-SC 감성 분석 중...")
         if news_df.empty:
-            logger.warning("  뉴스가 없어 감성 분석을 건너뜁니다.")
+            _log("  ⚠ 뉴스가 없어 감성 분석을 건너뜁니다.")
             sentiment_df = pd.DataFrame(
                 columns=["date", "positive", "negative", "neutral", "sentiment_score"]
             )
         else:
             if self.analyzer is None:
-                logger.info("  감성 분석 모델 초기화 중... (최초 1회 시 모델 다운로드)")
+                _log("  ↓ loading snunlp/KR-FinBert-SC ...")
                 self.analyzer = SentimentAnalyzer()
+            _log(f"  ↓ analyzing {len(news_df)} articles in batches ...")
             sentiment_df = self.analyzer.analyze(news_df)
-            logger.info(
-                f"  분석 완료: {len(sentiment_df)}일, "
-                f"평균 감성: {sentiment_df['sentiment_score'].mean():.3f}"
+            _log(
+                f"  ✓ 감성 분석 완료 (avg: {sentiment_df['sentiment_score'].mean():.3f})"
             )
 
         # ── Step 5: 전처리 + 학습 ──
-        logger.info("\n[Step 5/6] 데이터 전처리 및 모델 학습")
+        _log("\n[Step 5/6] XGBoost 모델 학습 중...")
+        _log("  ↓ preprocessing: MA, RSI, MACD, Bollinger ...")
         preprocessed_df = self.preprocessor.preprocess(stock_df, sentiment_df)
 
         if len(preprocessed_df) < 30:
@@ -211,26 +226,30 @@ class StockPredictionPipeline:
                 f"최소 30개 이상의 거래일 데이터가 필요합니다."
             )
 
+        _log("  ↓ training XGBRegressor & XGBClassifier ...")
         train_result = self.trainer.train(preprocessed_df, ticker)
-        logger.info(f"  학습 완료 — 모델 저장: {train_result['model_files']}")
+        _log(f"  ✓ 모델 저장: models/{ticker}_regressor.pkl")
 
         # ── Step 6: 예측 ──
-        logger.info("\n[Step 6/6] 다음 거래일 주가 예측")
+        _log(f"\n[Step 6/6] {target_date} 종가 예측 수행 중...")
+        _log("  ↓ loading model & scaler ...")
         self.predictor.load_model(ticker)
+        _log("  ↓ inference ...")
         prediction = self.predictor.predict_from_dataframe(
             ticker=ticker,
             df=preprocessed_df,
             stock_name=stock_name,
+            target_date=target_date,
         )
 
-        logger.info("\n" + "=" * 60)
-        logger.info("예측 완료!")
-        logger.info("=" * 60)
+        _log("\n" + "=" * 60)
+        _log("  ✅ 예측 완료!")
+        _log("=" * 60)
 
         return prediction
 
     def _predict_with_saved_model(
-        self, ticker: str, stock_name: str, year: int
+        self, ticker: str, stock_name: str, target_date: str, progress_callback: Optional[callable] = None
     ) -> Dict[str, Any]:
         """
         저장된 모델을 로드하여 최신 데이터로 예측을 수행합니다.
@@ -238,24 +257,24 @@ class StockPredictionPipeline:
         skip_train 옵션 사용 시 호출됩니다.
         최근 60 거래일의 주가 데이터를 수집하여 기술적 지표를 계산하고,
         최신 뉴스의 감성 분석 결과와 함께 예측을 수행합니다.
-
-        Args:
-            ticker: 종목코드
-            stock_name: 종목명
-            year: 원래 요청된 연도
-
-        Returns:
-            dict: 예측 결과 딕셔너리
         """
+        def _log(msg: str):
+            logger.info(msg)
+            if progress_callback:
+                progress_callback(msg)
+
         # 모델 로드
+        _log("  ↓ loading model & scaler ...")
         self.predictor.load_model(ticker)
 
         # 최근 데이터 수집 (기술적 지표 계산을 위해 최근 60거래일)
-        end_date = datetime.now().strftime("%Y-%m-%d")
-        start_date_dt = datetime.now() - pd.Timedelta(days=90)
+        today = datetime.now()
+        end_date = (today + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        start_date_dt = today - pd.Timedelta(days=90)
         start_date = start_date_dt.strftime("%Y-%m-%d")
 
-        logger.info(f"최근 주가 데이터 수집: {start_date} ~ {end_date}")
+        _log(f"\n[Step 2/6] yfinance 주가 데이터 수집 중...")
+        _log(f"  ↓ downloading OHLCV data... ({start_date} ~ {today.strftime('%Y-%m-%d')})")
         stock_df = self.collector.fetch_stock_data(ticker, start_date, end_date)
 
         if stock_df.empty:
@@ -267,14 +286,22 @@ class StockPredictionPipeline:
         )
 
         # 전처리 (타겟 없이 피처만 계산)
+        _log("\n[Step 5/6] preprocessing: MA, RSI, MACD, Bollinger ...")
         preprocessed_df = self.preprocessor.preprocess(stock_df, sentiment_df)
 
         # 예측
+        _log(f"\n[Step 6/6] {target_date} 종가 예측 수행 중...")
+        _log("  ↓ inference ...")
         prediction = self.predictor.predict_from_dataframe(
             ticker=ticker,
             df=preprocessed_df,
             stock_name=stock_name,
+            target_date=target_date,
         )
+        
+        _log("\n" + "=" * 60)
+        _log("  ✅ 예측 완료!")
+        _log("=" * 60)
 
         return prediction
 
@@ -289,7 +316,7 @@ def parse_arguments() -> argparse.Namespace:
     Returns:
         argparse.Namespace: 파싱된 인자
             - stock: 종목명 또는 종목코드
-            - year: 학습 대상 연도
+            - target_date: 예측 대상 날짜 (선택)
             - skip_train: 기존 모델 사용 여부
             - model_dir: 모델 저장 디렉토리
             - max_pages: 월별 최대 크롤링 페이지 수
@@ -301,14 +328,17 @@ def parse_arguments() -> argparse.Namespace:
         description=(
             "뉴스 감성 분석 + 기술적 지표 기반 주가 예측 프로그램\n"
             "KR-FinBert-SC 감성 분석 모델과 XGBoost를 활용하여\n"
-            "다음 거래일의 주가를 예측합니다."
+            "주가를 예측합니다. 대상 날짜 미지정 시:\n"
+            "  - 장 운영 중(~15:30) → 오늘 종가 예측\n"
+            "  - 장 마감 후 / 주말 → 다음 거래일 종가 예측"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "사용 예시:\n"
-            '  python stock_predictor.py --stock "삼성전자" --year 2024\n'
-            '  python stock_predictor.py --stock "005930" --year 2024 --skip-train\n'
-            '  python stock_predictor.py --stock "카카오" --year 2024 --output result.json'
+            '  python stock_predictor.py --stock "삼성전자"\n'
+            '  python stock_predictor.py --stock "삼성전자" --date 2026-07-16\n'
+            '  python stock_predictor.py --stock "005930" --skip-train\n'
+            '  python stock_predictor.py --stock "카카오" --output result.json'
         ),
     )
 
@@ -319,10 +349,10 @@ def parse_arguments() -> argparse.Namespace:
         help='종목명 또는 종목코드 (예: "삼성전자" 또는 "005930")',
     )
     parser.add_argument(
-        "--year", "-y",
-        type=int,
-        default=datetime.now().year,
-        help="학습 대상 연도 (예: 2026, 기본값: 현재 연도)",
+        "--date", "-d",
+        type=str,
+        default=None,
+        help="예측 대상 날짜 (YYYY-MM-DD). 미지정 시 장 시간에 따라 자동 결정",
     )
     parser.add_argument(
         "--skip-train",
@@ -424,7 +454,7 @@ def main() -> None:
 
         result = pipeline.run(
             stock_input=args.stock,
-            year=args.year,
+            target_date=args.date,
             skip_train=args.skip_train,
         )
 

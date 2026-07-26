@@ -129,10 +129,11 @@ class StockPredictor:
     def predict(
         self,
         ticker: str,
-        features: Union[pd.Series, Dict[str, float], np.ndarray],
+        features: Union[np.ndarray, pd.Series],
         avg_sentiment: float = 0.0,
         target_date: Optional[str] = None,
         stock_name: Optional[str] = None,
+        **kwargs
     ) -> Dict[str, Any]:
         """
         피처 벡터를 입력받아 다음 날 주가를 예측합니다.
@@ -158,6 +159,8 @@ class StockPredictor:
                 - avg_sentiment_score (float): 평균 감성 스코어
                 - model_metrics (dict): 학습 시 성능 지표
                 - predicted_at (str): 예측 수행 시각
+                - last_close_price (int): 마지막 종가 (입력된 경우)
+                - last_close_date (str): 마지막 종가 날짜 (입력된 경우)
 
         Raises:
             RuntimeError: 모델이 로드되지 않은 경우
@@ -202,6 +205,14 @@ class StockPredictor:
             "predicted_at": datetime.now().isoformat(),
         }
 
+        # kwargs를 통해 last_close 정보를 전달받은 경우 추가
+        last_close_price_val = kwargs.get("last_close_price")
+        last_close_date_val = kwargs.get("last_close_date")
+        if last_close_price_val is not None:
+            result["last_close_price"] = last_close_price_val
+        if last_close_date_val is not None:
+            result["last_close_date"] = last_close_date_val
+
         if stock_name:
             result["stock_name"] = stock_name
 
@@ -245,10 +256,22 @@ class StockPredictor:
         # 감성 스코어 추출
         avg_sentiment = float(last_row.get("sentiment_score", 0.0))
 
-        # 대상 날짜가 없으면 마지막 날짜의 다음 거래일
-        if target_date is None and "Date" in df.columns:
+        # 마지막 종가 정보 추출
+        last_close_price = int(last_row.get("Close", 0))
+        last_close_date = ""
+        if "Date" in df.columns:
             last_date = pd.to_datetime(df["Date"].iloc[-1])
-            target_date = self._get_next_trading_date(last_date)
+            last_close_date = last_date.strftime("%Y-%m-%d")
+            
+            # 대상 날짜가 없으면 마지막 날짜의 다음 거래일
+            if target_date is None:
+                target_date = self._get_next_trading_date(last_date)
+        elif df.index.name == "Date" or isinstance(df.index, pd.DatetimeIndex):
+            last_date = pd.to_datetime(df.index[-1])
+            last_close_date = last_date.strftime("%Y-%m-%d")
+            
+            if target_date is None:
+                target_date = self._get_next_trading_date(last_date)
 
         return self.predict(
             ticker=ticker,
@@ -256,6 +279,8 @@ class StockPredictor:
             avg_sentiment=avg_sentiment,
             target_date=target_date,
             stock_name=stock_name,
+            last_close_price=last_close_price,
+            last_close_date=last_close_date,
         )
 
     def _prepare_feature_vector(
@@ -318,3 +343,43 @@ class StockPredictor:
             next_date += timedelta(days=1)
 
         return next_date.strftime("%Y-%m-%d")
+
+    @staticmethod
+    def get_smart_target_date() -> str:
+        """
+        한국 주식시장 기준으로 예측 대상 날짜를 자동 결정합니다.
+
+        - 평일 15:30 이전 → 오늘 종가 예측
+        - 평일 15:30 이후 / 주말 → 다음 거래일 종가 예측
+
+        한국 장 운영 시간: 09:00 ~ 15:30 KST
+
+        Returns:
+            str: "YYYY-MM-DD" 형식의 예측 대상일
+        """
+        try:
+            import zoneinfo
+            kst = zoneinfo.ZoneInfo("Asia/Seoul")
+        except ImportError:
+            import pytz
+            kst = pytz.timezone("Asia/Seoul")
+
+        now_kst = datetime.now(kst)
+        market_close_hour = 15
+        market_close_minute = 30
+
+        is_weekday = now_kst.weekday() < 5
+        before_close = (
+            now_kst.hour < market_close_hour
+            or (now_kst.hour == market_close_hour and now_kst.minute < market_close_minute)
+        )
+
+        if is_weekday and before_close:
+            # 장이 아직 안 끝남 → 오늘 종가 예측
+            return now_kst.strftime("%Y-%m-%d")
+        else:
+            # 장이 끝났거나 주말 → 다음 거래일
+            target = now_kst + timedelta(days=1)
+            while target.weekday() >= 5:
+                target += timedelta(days=1)
+            return target.strftime("%Y-%m-%d")
