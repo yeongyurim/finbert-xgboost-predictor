@@ -14,23 +14,69 @@
    - Flutter로 제작된 웹 프레임워크 기반의 반응형 프론트엔드.
    - 어두운 배경, 형광색 포인트, 터미널 타이핑 효과를 활용한 사이버펑크 감성.
 
-## 🏗 시스템 아키텍처
+## 🏗 시스템 아키텍처 및 상호작용
 
-### 🖥 Frontend (Flutter Web)
-- **역할**: 사용자 인터페이스 제공 및 비동기 작업 상태 실시간 표시.
-- **주요 기술**: Flutter, Dart, HTTP 클라이언트
-- **특징**: `POST /predict/async` 호출 후 발급받은 `task_id`를 통해 `GET /predict/status/{task_id}`를 1초마다 폴링(Polling)하여 백엔드의 실제 진행 로그를 화면에 렌더링합니다.
+### 1. 시스템 아키텍처 (System Architecture)
 
-### ⚙️ Backend (FastAPI - Python)
-- **역할**: 주가 예측 파이프라인(크롤링, 전처리, 학습, 추론) 실행 및 비동기 API 제공.
-- **주요 기술**: FastAPI, Uvicorn, asyncio
-- **데이터 파이프라인 모듈 (`modules/`)**:
-  - `data_collector.py`: `yfinance`를 활용하여 대상 종목의 최근 주가(OHLCV) 데이터 수집. (당일 마감된 장 데이터까지 꼼꼼히 포함)
-  - `news_crawler.py`: `BeautifulSoup`과 네이버 뉴스 검색을 이용하여 월별로 고르게 관련 뉴스 기사 크롤링. (봇 차단 우회 및 User-Agent 적용)
-  - `sentiment_analyzer.py`: HuggingFace의 `snunlp/KR-FinBert-SC` 모델을 로드하여 기사 제목의 감성을 분석하고 점수화.
-  - `preprocessor.py`: 주가 데이터에 MA, RSI, MACD, Bollinger Bands 등 기술적 지표를 추가하고 감성 스코어와 병합.
-  - `trainer.py`: 전처리된 데이터를 바탕으로 XGBoost 모델(Regressor & Classifier)을 학습하고 모델 저장 (`models/`).
-  - `predictor.py`: 저장된 모델을 불러와 최신 데이터를 통과시켜 최종 주가와 추세를 예측.
+```mermaid
+graph TD
+    Client[Flutter Web Frontend]
+    Backend[FastAPI Backend]
+    
+    subgraph AI Models
+        FinBERT[KR-FinBert-SC<br>Sentiment Analysis]
+        XGB_Reg[XGBRegressor<br>Price Prediction]
+        XGB_Clf[XGBClassifier<br>Trend Prediction]
+    end
+    
+    subgraph Data Sources
+        YFinance[(yfinance API<br>OHLCV Data)]
+        NaverNews[(Naver News<br>Web Crawling)]
+    end
+
+    Client <-->|REST API / Polling| Backend
+    Backend --> YFinance
+    Backend --> NaverNews
+    Backend --> FinBERT
+    Backend --> XGB_Reg
+    Backend --> XGB_Clf
+```
+
+### 2. 비동기 처리 및 폴링 시퀀스 (Interaction Sequence)
+
+```mermaid
+sequenceDiagram
+    participant U as User (Browser)
+    participant F as Flutter Frontend
+    participant B as FastAPI Backend
+    participant D as Data Modules
+    participant M as AI Models
+
+    U->>F: "삼성전자" 검색 버튼 클릭
+    F->>B: POST /predict/async {"stock": "삼성전자"}
+    B-->>F: HTTP 202 Accepted (task_id 반환)
+    
+    note over B, M: 백엔드 백그라운드 작업 시작
+    B->>D: 1. 주가 데이터(yfinance) & 뉴스 크롤링
+    D-->>B: 주가 데이터 & 뉴스 텍스트
+    
+    loop Every 1 Second
+        F->>B: GET /predict/status/{task_id}
+        B-->>F: 진행 상태 및 로그 (Running)
+        F-->>U: 터미널 UI 실시간 업데이트
+    end
+
+    B->>M: 2. KR-FinBert 감성 분석 수행
+    M-->>B: 감성 스코어 산출
+    B->>M: 3. XGBoost 학습 및 예측 수행
+    M-->>B: 최종 종가 및 추세 예측 결과 반환
+    
+    note over B: 백그라운드 작업 완료 (Completed)
+    
+    F->>B: GET /predict/status/{task_id}
+    B-->>F: 최종 예측 결과 반환 (Completed)
+    F-->>U: 결과 카드 화면 렌더링
+```
 
 ## 🚀 실행 방법
 
